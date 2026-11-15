@@ -82,6 +82,24 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
 },"required":["thought","action"]}
 """.trimIndent()
 
+        /** Groq strict モード用（全項目必須・不要な項目は null） */
+        val STRICT_SCHEMA: JSONObject by lazy {
+            fun t(vararg ty: String) = JSONObject().put("type", org.json.JSONArray(ty.toList()))
+            val props = JSONObject()
+                .put("thought", JSONObject().put("type", "string").put("description", "短い日本語で、画面の状況と次の一手の理由"))
+                .put("plan", t("string", "null")).put("note", t("string", "null"))
+                .put("action", JSONObject().put("type", "string").put("enum", org.json.JSONArray(ACTIONS.toList())))
+                .put("id", t("integer", "null")).put("text", t("string", "null"))
+                .put("dir", t("string", "null"))
+                .put("name", t("string", "null")).put("page", t("string", "null"))
+                .put("sec", t("number", "null"))
+                .put("x1", t("number", "null")).put("y1", t("number", "null")).put("x2", t("number", "null")).put("y2", t("number", "null"))
+                .put("result", t("string", "null")).put("lesson", t("string", "null"))
+            JSONObject().put("type", "object").put("properties", props)
+                .put("required", org.json.JSONArray(props.keys().asSequence().toList()))
+                .put("additionalProperties", false)
+        }
+
         private fun idOf(v: Any?): Int? = when (v) {
             is Number -> v.toInt()
             is String -> Regex("\\d+").find(v)?.value?.toIntOrNull()
@@ -91,6 +109,7 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
         /** モデルごとの書き方の揺れを吸収して、実行できる形にそろえる */
         fun normalize(src: JSONObject): JSONObject {
             val a = JSONObject(src.toString())
+            a.keys().asSequence().toList().forEach { if (a.isNull(it)) a.remove(it) }
             // パラメータが入れ子の場合は展開
             for (k in listOf("params", "parameters", "args", "arguments", "input")) {
                 val o = a.optJSONObject(k) ?: continue
@@ -280,7 +299,11 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
     private fun screenFor(text: String): String {
         if (text.isEmpty()) return "(no readable elements)"
         val m = if (Prefs.localMode != "off") LocalLlm.readyModel(s) else null
-        val limit = when { m == null -> Int.MAX_VALUE; m.ctx <= 4096 -> 1500; else -> 4000 }
+        val limit = when {
+            m != null -> if (m.ctx <= 4096) 1500 else 4000
+            Prefs.provider == "groq" -> 5000 // Groq無料枠はTPMが小さいので画面情報を節約
+            else -> 12000
+        }
         if (text.length <= limit) return text
         val out = StringBuilder()
         for (line in text.lineSequence()) {

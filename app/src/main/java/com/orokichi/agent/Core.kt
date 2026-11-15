@@ -46,7 +46,7 @@ object Prefs {
         "gemini" -> "gemini-2.5-flash"
         "openrouter" -> "meta-llama/llama-3.3-70b-instruct:free"
         "glm" -> "glm-4.7-flash"
-        else -> "llama-3.3-70b-versatile"
+        else -> "openai/gpt-oss-20b"
     }
     fun model(p: String) = s("model_$p", defaultModel(p)).ifBlank { defaultModel(p) }
     fun setModel(p: String, v: String) = put("model_$p", v.trim())
