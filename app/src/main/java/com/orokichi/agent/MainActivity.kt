@@ -499,6 +499,7 @@ private fun ProviderCard(p: String, result: String?, onResult: (String?) -> Unit
                     Text(when (p) {
                         "gemini" -> "aistudio.google.com で取得"
                         "openrouter" -> "openrouter.ai/keys で取得"
+                        "glm" -> "z.ai/manage-apikey/apikey-list で取得（glm-4.7-flash は無料）"
                         else -> "console.groq.com/keys で取得"
                     })
                 },

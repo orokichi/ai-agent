@@ -53,8 +53,11 @@ object Llm {
     }
 
     private fun openai(c: LlmCfg, sys: String, user: String): String {
-        val url = if (c.provider == "openrouter") "https://openrouter.ai/api/v1/chat/completions"
-        else "https://api.groq.com/openai/v1/chat/completions"
+        val url = when (c.provider) {
+            "openrouter" -> "https://openrouter.ai/api/v1/chat/completions"
+            "glm" -> "https://api.z.ai/api/paas/v4/chat/completions"
+            else -> "https://api.groq.com/openai/v1/chat/completions"
+        }
         val body = JSONObject()
             .put("model", c.model)
             .put("temperature", 0.1)
@@ -64,7 +67,9 @@ object Llm {
                     .put(JSONObject().put("role", "system").put("content", sys))
                     .put(JSONObject().put("role", "user").put("content", user))
             )
-        if (c.provider == "groq") body.put("response_format", JSONObject().put("type", "json_object"))
+        if (c.provider == "groq" || c.provider == "glm") body.put("response_format", JSONObject().put("type", "json_object"))
+        // GLMは思考モードを切って速度とトークンを節約
+        if (c.provider == "glm") body.put("thinking", JSONObject().put("type", "disabled"))
         val h = mutableMapOf("Authorization" to "Bearer ${c.key}")
         if (c.provider == "openrouter") {
             h["HTTP-Referer"] = "https://github.com/orokichi/ai-agent"

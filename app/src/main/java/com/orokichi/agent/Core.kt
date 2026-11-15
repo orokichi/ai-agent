@@ -28,9 +28,9 @@ object Prefs {
     private fun s(k: String, d: String) = sp.getString(k, d) ?: d
     private fun put(k: String, v: String) = sp.edit().putString(k, v).apply()
 
-    val providers = listOf("groq", "gemini", "openrouter")
+    val providers = listOf("groq", "gemini", "openrouter", "glm")
     fun providerLabel(p: String) = when (p) {
-        "gemini" -> "Gemini"; "openrouter" -> "OpenRouter"; else -> "Groq"
+        "gemini" -> "Gemini"; "openrouter" -> "OpenRouter"; "glm" -> "GLM"; else -> "Groq"
     }
 
     var provider: String
@@ -42,6 +42,7 @@ object Prefs {
     fun defaultModel(p: String) = when (p) {
         "gemini" -> "gemini-2.5-flash"
         "openrouter" -> "meta-llama/llama-3.3-70b-instruct:free"
+        "glm" -> "glm-4.7-flash"
         else -> "llama-3.3-70b-versatile"
     }
     fun model(p: String) = s("model_$p", defaultModel(p)).ifBlank { defaultModel(p) }
