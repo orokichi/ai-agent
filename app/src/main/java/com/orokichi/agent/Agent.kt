@@ -18,7 +18,6 @@ Rules: one action per reply. Use open_app to launch apps. Never enter passwords,
     }
 
     suspend fun run(goal: String, deadline: Long?): String {
-        val cfg = Prefs.llm()
         val max = Prefs.maxSteps
         val history = ArrayDeque<String>()
         if (s.readScreen().pkg == Safety.OWN) {
@@ -38,7 +37,7 @@ Rules: one action per reply. Use open_app to launch apps. Never enter passwords,
                 append("\nScreen:\n").append(sc.text.ifEmpty { "(no readable elements)" })
             }
             val a: JSONObject = try {
-                Llm.parseJson(Llm.chat(cfg, SYSTEM, user))
+                Llm.parseJson(Llm.ask(SYSTEM, user))
             } catch (e: IOException) {
                 if (e.message?.startsWith("AIの応答") == true) {
                     history.addLast("invalid JSON reply"); trim(history); continue

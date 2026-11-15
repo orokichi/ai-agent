@@ -46,7 +46,18 @@ object Prefs {
     }
     fun model(p: String) = s("model_$p", defaultModel(p)).ifBlank { defaultModel(p) }
     fun setModel(p: String, v: String) = put("model_$p", v.trim())
-    fun llm() = LlmCfg(provider, key(provider), model(provider))
+    fun llm() = LlmCfg(provider, keys(provider).firstOrNull() ?: "", model(provider))
+    fun keys(p: String) = key(p).split(',', '\n', ' ').map { it.trim() }.filter { it.isNotEmpty() }
+    fun hasAnyKey() = providers.any { keys(it).isNotEmpty() }
+
+    /** 優先プロバイダー → 残りの順に、登録済みの全キー */
+    fun candidates(): List<LlmCfg> =
+        (listOf(provider) + providers.filter { it != provider })
+            .flatMap { p -> keys(p).map { LlmCfg(p, it, model(p)) } }
+
+    var autoSwitch: Boolean
+        get() = sp.getBoolean("autoSwitch", true)
+        set(v) = sp.edit().putBoolean("autoSwitch", v).apply()
 
     var maxSteps: Int
         get() = sp.getInt("maxSteps", 25)

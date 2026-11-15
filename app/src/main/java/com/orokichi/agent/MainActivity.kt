@@ -186,7 +186,7 @@ fun AgentScreen() {
                     when {
                         goal.isBlank() -> err = "やってほしいことを入力してください"
                         svc == null -> err = "ユーザー補助を有効にしてください"
-                        Prefs.key(Prefs.provider).isBlank() -> err = "設定タブでAPIキーを入力してください"
+                        !Prefs.hasAnyKey() -> err = "設定タブでAPIキーを入力してください"
                         else -> svc.startRun(goal.trim(), null, "手動")
                     }
                 },
@@ -348,14 +348,13 @@ fun TaskEditor(init: AgentTask, onDismiss: () -> Unit, onSave: (AgentTask) -> Un
 fun SettingsScreen() {
     val ctx = LocalContext.current
     var provider by remember { mutableStateOf(Prefs.provider) }
-    var key by remember(provider) { mutableStateOf(Prefs.key(provider)) }
-    var model by remember(provider) { mutableStateOf(Prefs.model(provider)) }
+    var auto by remember { mutableStateOf(Prefs.autoSwitch) }
+    val test = remember { mutableStateMapOf<String, String?>() }
     var mode by remember { mutableStateOf(Prefs.safetyMode) }
     var steps by remember { mutableFloatStateOf(Prefs.maxSteps.toFloat()) }
     var blocked by remember { mutableStateOf(Prefs.blockedPkgs) }
     var overlay by remember { mutableStateOf(Prefs.overlayStop) }
     var volume by remember { mutableStateOf(Prefs.volumeStop) }
-    var test by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     var a11y by remember { mutableStateOf(AgentService.isEnabled(ctx)) }
@@ -378,11 +377,12 @@ fun SettingsScreen() {
         Text("設定", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black)
 
         Section("AIプロバイダー")
+        Text("優先して使うAI", style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
             Prefs.providers.forEachIndexed { i, p ->
                 ToggleButton(
                     checked = provider == p,
-                    onCheckedChange = { provider = p; Prefs.provider = p; test = null },
+                    onCheckedChange = { provider = p; Prefs.provider = p },
                     shapes = when (i) {
                         0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
                         Prefs.providers.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
@@ -392,35 +392,24 @@ fun SettingsScreen() {
                 ) { Text(Prefs.providerLabel(p), maxLines = 1) }
             }
         }
-        OutlinedTextField(
-            value = key, onValueChange = { key = it; Prefs.setKey(provider, it) },
-            label = { Text("${Prefs.providerLabel(provider)} APIキー") },
-            singleLine = true,
-            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-            supportingText = {
-                Text(when (provider) {
-                    "gemini" -> "aistudio.google.com で取得"
-                    "openrouter" -> "openrouter.ai/keys で取得"
-                    else -> "console.groq.com/keys で取得"
-                })
-            },
-            modifier = Modifier.fillMaxWidth()
-        )
-        OutlinedTextField(
-            value = model, onValueChange = { model = it; Prefs.setModel(provider, it) },
-            label = { Text("モデル") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
-            supportingText = { Text("既定: ${Prefs.defaultModel(provider)}") }
-        )
+        SwitchRow(Icons.Rounded.SwapHoriz, "制限時に自動切り替え", "429などの制限で次のキー/AIへ。全部制限中なら1分待機", auto) { auto = it; Prefs.autoSwitch = it }
+        Prefs.providers.forEach { p -> ProviderCard(p, test[p]) { test[p] = it } }
         FilledTonalButton(onClick = {
-            test = "テスト中…"
             scope.launch {
-                test = try {
-                    val r = Llm.chat(Prefs.llm(), "Reply only with JSON.", "Return {\"ok\":true}")
-                    if (r.contains("ok")) "✓ 接続OK" else "応答: ${r.take(60)}"
-                } catch (e: Exception) { "✕ ${e.message}" }
+                Prefs.providers.forEach { p ->
+                    val k = Prefs.keys(p)
+                    if (k.isEmpty()) { test[p] = null; return@forEach }
+                    test[p] = "テスト中…"
+                    var ok = 0
+                    val errs = mutableListOf<String>()
+                    k.forEach { key ->
+                        try { Llm.chat(LlmCfg(p, key, Prefs.model(p)), "Reply only with JSON.", "Return {\"ok\":true}"); ok++ }
+                        catch (e: Exception) { errs += (e.message ?: "エラー").take(60) }
+                    }
+                    test[p] = if (errs.isEmpty()) "✓ ${ok}個のキーが接続OK" else "✓$ok ✕${errs.size}: ${errs.first()}"
+                }
             }
-        }) { Icon(Icons.Rounded.NetworkCheck, null); Spacer(Modifier.width(8.dp)); Text("接続テスト") }
-        test?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.NetworkCheck, null); Spacer(Modifier.width(8.dp)); Text("すべて接続テスト") }
 
         Section("安全装置")
         Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
@@ -462,6 +451,40 @@ fun SettingsScreen() {
         Text("APIキーはこの端末内にのみ保存されます。画面ロック中は操作できないため、定期タスクはロック解除中に実行されます。",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun ProviderCard(p: String, result: String?, onResult: (String?) -> Unit) {
+    var key by remember { mutableStateOf(Prefs.key(p)) }
+    var model by remember { mutableStateOf(Prefs.model(p)) }
+    val n = key.split(',', '\n', ' ').count { it.isNotBlank() }
+    Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surfaceContainer, modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(Prefs.providerLabel(p), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                if (n > 0) AssistChip(onClick = {}, label = { Text("キー ${n}個") })
+            }
+            OutlinedTextField(
+                value = key, onValueChange = { key = it; Prefs.setKey(p, it); onResult(null) },
+                label = { Text("APIキー（カンマ区切りで複数可）") }, singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                supportingText = {
+                    Text(when (p) {
+                        "gemini" -> "aistudio.google.com で取得"
+                        "openrouter" -> "openrouter.ai/keys で取得"
+                        else -> "console.groq.com/keys で取得"
+                    })
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = model, onValueChange = { model = it; Prefs.setModel(p, it) },
+                label = { Text("モデル") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
+                supportingText = { Text("既定: ${Prefs.defaultModel(p)}") }
+            )
+            result?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+        }
     }
 }
 
