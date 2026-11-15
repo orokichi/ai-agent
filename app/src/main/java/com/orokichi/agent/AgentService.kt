@@ -109,7 +109,6 @@ class AgentService : AccessibilityService() {
                 AgentState.status.value = "待機中"
                 hideOverlay()
                 cursor.hide()
-                LocalLlm.releaseLater()
                 Notifs.cancel(this@AgentService, Notifs.ID_RUN)
                 if (wl.isHeld) wl.release()
             }

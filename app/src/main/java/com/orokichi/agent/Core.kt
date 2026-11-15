@@ -18,6 +18,7 @@ class App : Application() {
         Prefs.init(this)
         Tasks.load()
         Notifs.channels(this)
+        LocalLlm.preload(this)
     }
 }
 

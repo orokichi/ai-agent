@@ -63,6 +63,7 @@ fun Root() {
     }
     val pending by AgentState.pending.collectAsState()
     var tutorial by rememberSaveable { mutableStateOf(!Prefs.tutorialDone) }
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { LocalLlm.preload(ctx) }
 
     Scaffold(
         bottomBar = {
@@ -126,6 +127,7 @@ fun AgentScreen() {
     ) {
         Spacer(Modifier.height(16.dp))
         Text("AIエージェント", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black)
+        LocalStatusChip()
 
         if (!a11y) {
             Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.errorContainer) {

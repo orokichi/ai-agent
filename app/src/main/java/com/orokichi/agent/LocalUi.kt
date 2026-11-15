@@ -80,9 +80,27 @@ fun ModelRow(m: LocalModel, selected: Boolean, onSelect: () -> Unit) {
     }
 }
 
+/** 端末内AIの読み込み状態 */
+@Composable
+fun LocalStatusChip() {
+    val ctx = LocalContext.current
+    if (Prefs.localMode == "off" || LocalLlm.readyModel(ctx) == null) return
+    val st by LocalLlm.state.collectAsState()
+    AssistChip(
+        onClick = { LocalLlm.preload(ctx) },
+        label = { Text("端末内AI: $st") },
+        leadingIcon = {
+            if (st.startsWith("読み込み中")) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            else Icon(if (st.startsWith("準備完了")) Icons.Rounded.CheckCircle else Icons.Rounded.Memory, null, Modifier.size(18.dp))
+        }
+    )
+}
+
 /** 設定タブ：端末内AI */
 @Composable
 fun LocalSection(onTutorial: () -> Unit) {
+    val ctx = LocalContext.current
+    val st by LocalLlm.state.collectAsState()
     var mode by remember { mutableStateOf(Prefs.localMode) }
     var sel by remember { mutableStateOf(Prefs.localModel) }
     var gpu by remember { mutableStateOf(Prefs.localGpu) }
@@ -99,7 +117,7 @@ fun LocalSection(onTutorial: () -> Unit) {
     Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
         modes.forEachIndexed { i, (k, l) ->
             ToggleButton(
-                checked = mode == k, onCheckedChange = { mode = k; Prefs.localMode = k },
+                checked = mode == k, onCheckedChange = { mode = k; Prefs.localMode = k; if (k == "off") LocalLlm.releaseLater() else LocalLlm.preload(ctx) },
                 shapes = when (i) {
                     0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
                     modes.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
@@ -116,10 +134,11 @@ fun LocalSection(onTutorial: () -> Unit) {
             else -> "クラウドAPIだけを使います。"
         }, style = MaterialTheme.typography.bodySmall
     )
+    if (mode != "off") Text("状態: $st", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
     LocalLlm.all().forEach { m ->
-        ModelRow(m, sel == m.id) { sel = m.id; Prefs.localModel = m.id }
+        ModelRow(m, sel == m.id) { sel = m.id; Prefs.localModel = m.id; LocalLlm.preload(ctx) }
     }
-    SwitchRow(Icons.Rounded.Memory, "GPUで高速化", "動かないときはオフにしてCPUで実行", gpu) { gpu = it; Prefs.localGpu = it }
+    SwitchRow(Icons.Rounded.Memory, "GPUで高速化", "動かないときはオフにしてCPUで実行", gpu) { gpu = it; Prefs.localGpu = it; LocalLlm.preload(ctx) }
     TextButton(onClick = { adv = !adv }) { Text(if (adv) "詳細設定を閉じる" else "詳細設定（ほかのモデル）") }
     if (adv) {
         OutlinedTextField(
@@ -195,6 +214,7 @@ fun TutorialDialog(onDone: () -> Unit) {
                                 if (mode == "off") FilledTonalButton(onClick = {
                                     mode = "first"; Prefs.localMode = "first"
                                     if (Prefs.localModel.isEmpty()) Prefs.localModel = rec.id
+                                    LocalLlm.preload(ctx)
                                 }) { Text("端末内AIを優先して使う") } else Done("端末内AIを使う設定です")
                                 Text("ダウンロードは閉じても通知で続きます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }

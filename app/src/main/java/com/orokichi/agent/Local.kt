@@ -11,6 +11,7 @@ import android.os.IBinder
 import android.os.StatFs
 import com.google.ai.edge.litertlm.Backend
 import com.google.ai.edge.litertlm.Contents
+import com.google.ai.edge.litertlm.Conversation
 import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
@@ -98,13 +99,19 @@ object LocalLlm {
     private var engPath: String? = null
     private var engGpu = false
 
+    /** 状態表示用 */
+    val state = MutableStateFlow("未読み込み")
+    private val bg = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     private fun engineFor(c: Context, m: LocalModel): Engine {
         val path = file(c, m).path
         val gpu = Prefs.localGpu
         engine?.let { if (engPath == path && engGpu == gpu) return it }
         release()
         Engine.setNativeMinLogSeverity(LogSeverity.ERROR)
+        state.value = "読み込み中…"
         AgentState.add("🧠 端末内モデルを読み込み中…（${m.name}）")
+        val t0 = System.currentTimeMillis()
         fun make(useGpu: Boolean) = Engine(
             EngineConfig(
                 modelPath = path,
@@ -113,23 +120,76 @@ object LocalLlm {
                 cacheDir = c.cacheDir.path
             )
         ).also { it.initialize() }
+        var usedGpu = gpu
         val e = try { make(gpu) } catch (t: Throwable) {
-            if (!gpu) throw t
+            if (!gpu) { state.value = "読み込み失敗"; throw t }
             AgentState.add("⚠ GPUで読み込めないためCPUで実行します")
-            make(false)
+            usedGpu = false
+            try { make(false) } catch (t2: Throwable) { state.value = "読み込み失敗"; throw t2 }
         }
         engine = e; engPath = path; engGpu = gpu
+        state.value = "準備完了（${m.name.substringBefore('（')}・${if (usedGpu) "GPU" else "CPU"}）"
+        AgentState.add("✓ 端末内モデル準備完了（${(System.currentTimeMillis() - t0) / 1000.0}秒）")
         return e
+    }
+
+    // システムプロンプトを先に読み込んだ「ひな形の会話」。各ステップはこれを複製して使う
+    private var base: Conversation? = null
+    private var baseKey = ""
+
+    private fun cfg(sys: String, rf: Boolean) = ConversationConfig(
+        systemInstruction = Contents.of(sys),
+        samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
+        maxOutputToken = 400,
+        enableResponseFormat = rf,
+        prefillPrefaceOnInit = true
+    )
+
+    private fun sysFor(m: LocalModel, sys: String) = if (m.ctx <= 4096) sys.substringBefore("## Android 17").trim() else sys
+
+    private fun baseFor(e: Engine, sys: String, rf: Boolean): Conversation? {
+        val key = "${engPath}|$rf|${sys.hashCode()}"
+        base?.let { if (baseKey == key) return it }
+        runCatching { base?.close() }
+        base = null
+        return try { e.createConversation(cfg(sys, rf)).also { base = it; baseKey = key } } catch (_: Throwable) { null }
+    }
+
+    private fun newConv(e: Engine, sys: String, rf: Boolean): Conversation {
+        val b = baseFor(e, sys, rf)
+        if (b != null) try { return b.clone() } catch (_: Throwable) { runCatching { b.close() }; base = null }
+        return e.createConversation(cfg(sys, rf).copy(prefillPrefaceOnInit = false))
+    }
+
+    /** アプリ起動時などに先読み（モデル＋システムプロンプト） */
+    fun preload(c: Context) {
+        if (!usable(c)) return
+        val m = readyModel(c) ?: return
+        val f = file(c, m).path
+        if (engine != null && engPath == f && engGpu == Prefs.localGpu && base != null) return
+        bg.launch {
+            mutex.withLock {
+                try {
+                    val e = engineFor(c, m)
+                    baseFor(e, sysFor(m, Agent.SYSTEM_LOCAL), schemaOk)
+                } catch (t: Throwable) {
+                    AgentState.add("✕ 端末内モデルの読み込み失敗: ${t.message?.take(80)}")
+                }
+            }
+        }
     }
 
     /** 推論中でも安全に解放（推論が終わってから閉じる） */
     fun releaseLater() {
-        CoroutineScope(Dispatchers.Default).launch { mutex.withLock { release() } }
+        bg.launch { mutex.withLock { release() } }
     }
 
     fun release() {
+        runCatching { base?.close() }
+        base = null; baseKey = ""
         runCatching { engine?.close() }
         engine = null; engPath = null
+        state.value = "未読み込み"
     }
 
     @Volatile private var schemaOk = true
@@ -137,26 +197,17 @@ object LocalLlm {
     suspend fun ask(c: Context, sys: String, user: String, schema: String? = null): String = withContext(Dispatchers.Default) {
         mutex.withLock {
             val m = readyModel(c) ?: throw IOException("端末内モデルがダウンロードされていません（設定タブ）")
-            // 文脈長に合わせて入力を短くする
             val small = m.ctx <= 4096
-            val s = if (small) sys.substringBefore("## Android 17").trim() else sys
+            val s = sysFor(m, sys)
             val cap = if (small) 4500 else 9000
-            // 上限を超える場合は中央（古い履歴や画面の末尾側）ではなく先頭側を残し、末尾の指示は必ず残す
             val u = if (user.length > cap) user.take(cap - 300) + "\n…\n" + user.takeLast(280) else user
             val e = engineFor(c, m)
-            val useSchema = schema != null && schemaOk
-            fun cfg(rf: Boolean) = ConversationConfig(
-                systemInstruction = Contents.of(s),
-                samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
-                maxOutputToken = 400,
-                enableResponseFormat = rf
-            )
-            fun gen(rf: Boolean): String = e.createConversation(cfg(rf)).use { conv ->
+            fun gen(rf: Boolean): String = newConv(e, s, rf).use { conv ->
                 val fmt = if (rf) ResponseFormat.json(schema!!) else null
                 try { conv.sendMessage(u, thinkingConfig = ThinkingConfig(enableThinking = false), responseFormat = fmt).toString() }
                 catch (ex: IllegalArgumentException) { if (rf) throw ex; conv.sendMessage(u).toString() }
             }
-            val out = if (useSchema) {
+            val out = if (schema != null && schemaOk) {
                 try { gen(true) } catch (t: Throwable) {
                     schemaOk = false
                     AgentState.add("ℹ 制約付き生成が使えないため通常生成に切り替え: ${t.message?.take(60)}")
@@ -206,6 +257,7 @@ class DownloadService : Service() {
                 download(m)
                 if (Prefs.localModel.isEmpty()) Prefs.localModel = m.id
                 AgentState.add("✓ ${m.name} のダウンロード完了")
+                LocalLlm.preload(applicationContext)
             } catch (e: Exception) {
                 if (isActive) LocalLlm.error.value = LocalLlm.error.value + (m.id to (e.message ?: "失敗").take(120))
             } finally {
