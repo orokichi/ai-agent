@@ -11,8 +11,10 @@ import java.util.Date
 import java.util.Locale
 
 class App : Application() {
+    companion object { lateinit var ctx: Context }
     override fun onCreate() {
         super.onCreate()
+        ctx = this
         Prefs.init(this)
         Tasks.load()
         Notifs.channels(this)
@@ -85,6 +87,26 @@ object Prefs {
     var learning: Boolean
         get() = sp.getBoolean("learning", true)
         set(v) = sp.edit().putBoolean("learning", v).apply()
+
+    /** off = クラウドのみ / first = 端末内を優先（失敗時API） / only = 端末内のみ */
+    var localMode: String
+        get() = s("localMode", "off")
+        set(v) = put("localMode", v)
+    var localModel: String
+        get() = s("localModel", "")
+        set(v) = put("localModel", v)
+    var localGpu: Boolean
+        get() = sp.getBoolean("localGpu", true)
+        set(v) = sp.edit().putBoolean("localGpu", v).apply()
+    var hfToken: String
+        get() = s("hfToken", "")
+        set(v) = put("hfToken", v)
+    var customModelUrl: String
+        get() = s("customModelUrl", "")
+        set(v) = put("customModelUrl", v)
+    var tutorialDone: Boolean
+        get() = sp.getBoolean("tutorialDone", false)
+        set(v) = sp.edit().putBoolean("tutorialDone", v).apply()
 
     var cursor: Boolean
         get() = sp.getBoolean("cursor", true)

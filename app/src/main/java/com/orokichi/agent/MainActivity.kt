@@ -62,6 +62,7 @@ fun Root() {
             notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
     val pending by AgentState.pending.collectAsState()
+    var tutorial by rememberSaveable { mutableStateOf(!Prefs.tutorialDone) }
 
     Scaffold(
         bottomBar = {
@@ -86,10 +87,11 @@ fun Root() {
             when (tab) {
                 0 -> AgentScreen()
                 1 -> TasksScreen(onEdit = { editing = it })
-                else -> SettingsScreen()
+                else -> SettingsScreen(onTutorial = { tutorial = true })
             }
         }
     }
+    if (tutorial) TutorialDialog { tutorial = false; Prefs.tutorialDone = true }
     editing?.let { t -> TaskEditor(t, onDismiss = { editing = null }) { Tasks.upsert(ctx, it); editing = null } }
     pending?.let { reason ->
         AlertDialog(
@@ -186,7 +188,7 @@ fun AgentScreen() {
                     when {
                         goal.isBlank() -> err = "やってほしいことを入力してください"
                         svc == null -> err = "ユーザー補助を有効にしてください"
-                        !Prefs.hasAnyKey() -> err = "設定タブでAPIキーを入力してください"
+                        !Prefs.hasAnyKey() && !LocalLlm.usable(ctx) -> err = "設定タブでAPIキーを入力するか、端末内AIをダウンロードしてください"
                         else -> svc.startRun(goal.trim(), null, "手動")
                     }
                 },
@@ -345,7 +347,7 @@ fun TaskEditor(init: AgentTask, onDismiss: () -> Unit, onSave: (AgentTask) -> Un
 /* ---------------- 設定 ---------------- */
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onTutorial: () -> Unit = {}) {
     val ctx = LocalContext.current
     var provider by remember { mutableStateOf(Prefs.provider) }
     var auto by remember { mutableStateOf(Prefs.autoSwitch) }
@@ -381,6 +383,9 @@ fun SettingsScreen() {
     ) {
         Spacer(Modifier.height(16.dp))
         Text("設定", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Black)
+
+        Section("端末内AI（Hugging Face）")
+        LocalSection(onTutorial)
 
         Section("AIプロバイダー")
         Text("優先して使うAI", style = MaterialTheme.typography.labelLarge)
@@ -543,7 +548,7 @@ private fun PermRow(icon: ImageVector, title: String, desc: String, ok: Boolean,
 }
 
 @Composable
-private fun SwitchRow(icon: ImageVector, title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+fun SwitchRow(icon: ImageVector, title: String, desc: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null)
         Spacer(Modifier.width(14.dp))

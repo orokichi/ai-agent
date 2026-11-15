@@ -19,6 +19,17 @@ object Llm {
 
     /** 登録済みの全キーを順に試す。制限(429)なら次へ、全部制限中なら60秒待って再試行。 */
     suspend fun ask(sys: String, user: String): String {
+        val lm = Prefs.localMode
+        if (lm != "off") {
+            val ready = LocalLlm.readyModel(App.ctx)
+            if (ready != null) {
+                try { return LocalLlm.ask(App.ctx, sys, user) }
+                catch (e: Throwable) {
+                    if (lm == "only" || e is kotlinx.coroutines.CancellationException) throw if (e is IOException || e is kotlinx.coroutines.CancellationException) e else IOException("端末内AIエラー: ${e.message}")
+                    AgentState.add("⚠ 端末内AIエラー → クラウドAPIへ: ${e.message?.take(60)}")
+                }
+            } else if (lm == "only") throw IOException("端末内モデルがダウンロードされていません（設定タブ）")
+        }
         for (round in 0..3) {
             val all = Prefs.candidates()
             if (all.isEmpty()) throw IOException("APIキーが未設定です（設定タブ）")
