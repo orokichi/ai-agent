@@ -155,12 +155,13 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
         val visited = linkedSetOf<String>()
         if (s.readScreen().pkg == Safety.OWN) {
             s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-            delay(900)
+            s.waitIdle(min = 400)
         }
+        var fails = 0
         for (step in 1..max) {
             if (deadline != null && System.currentTimeMillis() > deadline) return "指定の時間帯を過ぎたため終了しました"
             waitUnlocked()
-            val sc = s.readScreen()
+            val sc = s.readScreenStable()
             if (step > 1 && sc.text == prevScreen && history.isNotEmpty()) {
                 history[history.lastIndex] = history.last() + " (screen unchanged!)"
             }
@@ -181,7 +182,12 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
                 append("\nScreen ").append(s.screenSize()).append(":\n").append(screenFor(sc.text))
                 append("\n\nGoal (again): ").append(goal).append("\nReply with ONE JSON object for the next action.")
             }
-            val a = decide(user)
+            val a = try { decide(user) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                if (++fails >= 3) throw e
+                AgentState.add("⚠ AIエラー、再試行: ${e.message?.take(60)}")
+                delay(800); null
+            }
+            if (a != null) fails = 0
             if (a == null) { history.addLast("invalid reply (reply with ONE JSON object)"); trim(history); continue }
             val act = a.optString("action")
             if (act !in ACTIONS) {
@@ -254,7 +260,7 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
             repeat = if (key == lastKey) repeat + 1 else 0
             lastKey = key
             history.addLast("$what=$res"); trim(history)
-            if (act != "wait") delay(1200)
+            if (act != "wait") s.waitIdle(min = if (act in setOf("open_app", "open_settings", "back", "home")) 500 else 250)
         }
         return "最大ステップ数（$max）に達したため停止しました"
     }
@@ -274,7 +280,7 @@ Rules: one action per reply. Use only ids that exist on the current screen. If t
     private fun screenFor(text: String): String {
         if (text.isEmpty()) return "(no readable elements)"
         val m = if (Prefs.localMode != "off") LocalLlm.readyModel(s) else null
-        val limit = when { m == null -> Int.MAX_VALUE; m.ctx <= 4096 -> 2500; else -> 5500 }
+        val limit = when { m == null -> Int.MAX_VALUE; m.ctx <= 4096 -> 1500; else -> 4000 }
         if (text.length <= limit) return text
         val out = StringBuilder()
         for (line in text.lineSequence()) {

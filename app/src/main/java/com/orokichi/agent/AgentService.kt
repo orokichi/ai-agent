@@ -52,7 +52,29 @@ class AgentService : AccessibilityService() {
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    @Volatile var lastEvent = 0L
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) { lastEvent = android.os.SystemClock.uptimeMillis() }
+
+    /** 画面の変化が落ち着くまで待つ（固定待ちより速く確実） */
+    suspend fun waitIdle(min: Long = 250, quiet: Long = 400, max: Long = 3000) {
+        val t0 = android.os.SystemClock.uptimeMillis()
+        kotlinx.coroutines.delay(min)
+        while (true) {
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastEvent >= quiet || now - t0 >= max) return
+            kotlinx.coroutines.delay(80)
+        }
+    }
+
+    /** 読み取りに失敗したら少し待って再試行 */
+    suspend fun readScreenStable(): Screen {
+        repeat(4) {
+            val sc = runCatching { readScreen() }.getOrNull()
+            if (sc != null && sc.els.isNotEmpty()) return sc
+            kotlinx.coroutines.delay(300)
+        }
+        return runCatching { readScreen() }.getOrElse { Screen("", "", emptyList()) }
+    }
     override fun onInterrupt() {}
 
     override fun onUnbind(intent: Intent?): Boolean {

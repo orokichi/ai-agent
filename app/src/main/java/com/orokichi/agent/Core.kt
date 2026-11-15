@@ -96,6 +96,9 @@ object Prefs {
     var localModel: String
         get() = s("localModel", "")
         set(v) = put("localModel", v)
+    var gpuTrying: Boolean
+        get() = sp.getBoolean("gpuTrying", false)
+        set(v) { sp.edit().putBoolean("gpuTrying", v).commit() }
     var localGpu: Boolean
         get() = sp.getBoolean("localGpu", true)
         set(v) = sp.edit().putBoolean("localGpu", v).apply()

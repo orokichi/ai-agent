@@ -105,6 +105,11 @@ object LocalLlm {
 
     private fun engineFor(c: Context, m: LocalModel): Engine {
         val path = file(c, m).path
+        if (Prefs.gpuTrying && Prefs.localGpu) {
+            // 前回GPUでの読み込み/推論中にアプリが落ちた → CPUに自動切替
+            Prefs.localGpu = false; Prefs.gpuTrying = false
+            AgentState.add("⚠ 前回GPUで落ちたためCPU実行に切り替えました（設定で戻せます）")
+        }
         val gpu = Prefs.localGpu
         engine?.let { if (engPath == path && engGpu == gpu) return it }
         release()
@@ -112,22 +117,29 @@ object LocalLlm {
         state.value = "読み込み中…"
         AgentState.add("🧠 端末内モデルを読み込み中…（${m.name}）")
         val t0 = System.currentTimeMillis()
-        fun make(useGpu: Boolean) = Engine(
+        val cores = Runtime.getRuntime().availableProcessors().coerceIn(2, 8)
+        fun makeE(useGpu: Boolean) = Engine(
             EngineConfig(
                 modelPath = path,
-                backend = if (useGpu) Backend.GPU() else Backend.CPU(),
+                backend = if (useGpu) Backend.GPU() else Backend.CPU(threadCount = (cores - 2).coerceAtLeast(2)),
                 maxNumTokens = m.ctx,
                 cacheDir = c.cacheDir.path
             )
         ).also { it.initialize() }
+        fun make(useGpu: Boolean): Engine {
+            if (useGpu) Prefs.gpuTrying = true
+            return makeE(useGpu).also { Prefs.gpuTrying = false }
+        }
         var usedGpu = gpu
         val e = try { make(gpu) } catch (t: Throwable) {
             if (!gpu) { state.value = "読み込み失敗"; throw t }
+            Prefs.gpuTrying = false
             AgentState.add("⚠ GPUで読み込めないためCPUで実行します")
             usedGpu = false
+            Prefs.localGpu = false
             try { make(false) } catch (t2: Throwable) { state.value = "読み込み失敗"; throw t2 }
         }
-        engine = e; engPath = path; engGpu = gpu
+        engine = e; engPath = path; engGpu = usedGpu
         state.value = "準備完了（${m.name.substringBefore('（')}・${if (usedGpu) "GPU" else "CPU"}）"
         AgentState.add("✓ 端末内モデル準備完了（${(System.currentTimeMillis() - t0) / 1000.0}秒）")
         return e
@@ -140,7 +152,7 @@ object LocalLlm {
     private fun cfg(sys: String, rf: Boolean) = ConversationConfig(
         systemInstruction = Contents.of(sys),
         samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
-        maxOutputToken = 400,
+        maxOutputToken = 200,
         enableResponseFormat = rf,
         prefillPrefaceOnInit = true
     )
@@ -171,7 +183,9 @@ object LocalLlm {
             mutex.withLock {
                 try {
                     val e = engineFor(c, m)
+                    if (engGpu) Prefs.gpuTrying = true
                     baseFor(e, sysFor(m, Agent.SYSTEM_LOCAL), schemaOk)
+                    Prefs.gpuTrying = false
                 } catch (t: Throwable) {
                     AgentState.add("✕ 端末内モデルの読み込み失敗: ${t.message?.take(80)}")
                 }
@@ -199,14 +213,22 @@ object LocalLlm {
             val m = readyModel(c) ?: throw IOException("端末内モデルがダウンロードされていません（設定タブ）")
             val small = m.ctx <= 4096
             val s = sysFor(m, sys)
-            val cap = if (small) 4500 else 9000
+            // 日本語は1文字≒1トークンなので文字数で控えめに制限
+            val cap = if (small) 2800 else 7000
             val u = if (user.length > cap) user.take(cap - 300) + "\n…\n" + user.takeLast(280) else user
             val e = engineFor(c, m)
-            fun gen(rf: Boolean): String = newConv(e, s, rf).use { conv ->
+            fun send(rf: Boolean, msg: String): String = newConv(e, s, rf).use { conv ->
                 val fmt = if (rf) ResponseFormat.json(schema!!) else null
-                try { conv.sendMessage(u, thinkingConfig = ThinkingConfig(enableThinking = false), responseFormat = fmt).toString() }
-                catch (ex: IllegalArgumentException) { if (rf) throw ex; conv.sendMessage(u).toString() }
+                try { conv.sendMessage(msg, thinkingConfig = ThinkingConfig(enableThinking = false), responseFormat = fmt).toString() }
+                catch (ex: IllegalArgumentException) { if (rf) throw ex; conv.sendMessage(msg).toString() }
             }
+            fun tooLong(t: Throwable) = (t.message ?: "").lowercase().let { "token" in it || "exceed" in it || "too long" in it || "context" in it }
+            fun gen(rf: Boolean): String = try { send(rf, u) } catch (t: Throwable) {
+                if (!tooLong(t)) throw t
+                AgentState.add("ℹ 入力が長すぎるため短縮して再試行")
+                send(rf, u.take(u.length / 2) + "\n…\n" + u.takeLast(250))
+            }
+            if (engGpu) Prefs.gpuTrying = true
             val out = if (schema != null && schemaOk) {
                 try { gen(true) } catch (t: Throwable) {
                     schemaOk = false
@@ -214,6 +236,7 @@ object LocalLlm {
                     gen(false)
                 }
             } else gen(false)
+            if (Prefs.gpuTrying) Prefs.gpuTrying = false
             out.replace(Regex("(?s)<think>.*?</think>"), "").trim()
         }
     }
