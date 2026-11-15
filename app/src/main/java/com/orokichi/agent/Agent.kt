@@ -15,7 +15,8 @@ Each turn you receive: goal, current time, your plan and notes from earlier turn
 Reply with ONE JSON object only, no prose:
 {"thought":"what you see and why this action (1-2 short sentences)","plan":"remaining steps, short","note":"facts to remember (results found etc.) or empty","action":"...", ...params, "risk":"low|high"}
 Actions:
- tap{id} | long_press{id} | type{id,text} (replaces the field's text) | enter{id} (submit/search key) | scroll{id?,dir:"up|down|left|right"} (down = see content below) | swipe{x1,y1,x2,y2} | back | home | recents | notifications | open_app{name} | wait{sec} | done{result}
+ tap{id} | long_press{id} | type{id,text} (replaces the field's text) | enter{id} (submit/search key) | scroll{id?,dir:"up|down|left|right"} (down = see content below) | swipe{x1,y1,x2,y2} | back | home | recents | notifications | quick_settings | open_app{name} | open_settings{page} (page: wifi internet bluetooth display sound volume battery apps notifications location storage date language nfc airplane data_usage dnd wallpaper settings) | wait{sec} | done{result,lesson}
+On done, "lesson" = one short reusable tip you learned about operating the app(s) in this task (e.g. where a button is), or empty.
 Strategy:
 - Read the whole screen first; pick the element whose label best matches. Prefer ids over swipe coordinates.
 - Launch apps with open_app (app name as shown on the home screen). Do not hunt for icons.
@@ -25,7 +26,7 @@ Strategy:
 - When loading, use wait 2. When the goal is achieved, call done with the concrete result (e.g. the info found).
 Safety: never enter passwords, PINs or card numbers. Do not buy, pay, send money, delete, post, send messages, call or change security settings unless the goal explicitly asks. Set risk "high" for any irreversible action. If unsafe or impossible, done with the reason.
 Write thought, plan, note and result in the user's language (Japanese if the goal is Japanese).
-""".trimIndent()
+""".trimIndent() + "\n\n" + Knowledge.ANDROID17
     }
 
     private val cur get() = s.cursor
@@ -38,6 +39,7 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
         var prevScreen = ""
         var lastKey = ""
         var repeat = 0
+        val visited = linkedSetOf<String>()
         if (s.readScreen().pkg == Safety.OWN) {
             s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
             delay(900)
@@ -50,6 +52,7 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
                 history[history.lastIndex] = history.last() + " (screen unchanged!)"
             }
             prevScreen = sc.text
+            if (sc.pkg.isNotEmpty()) visited += sc.pkg
             AgentState.status.value = "考え中… ($step/$max)"
             cur.think("考え中… $step/$max", plan.ifEmpty { goal })
             val user = buildString {
@@ -60,6 +63,7 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
                 if (notes.isNotEmpty()) append("\nYour notes: ").append(notes)
                 append("\nRecent actions: ").append(if (history.isEmpty()) "none" else history.joinToString(" | "))
                 if (repeat >= 2) append("\nWARNING: you repeated the same action. Try a different approach.")
+                append(Knowledge.forPrompt(sc.pkg, visited))
                 append("\nApp: ").append(sc.pkg.ifEmpty { "unknown" })
                 append("\nScreen ").append(s.screenSize()).append(":\n").append(sc.text.ifEmpty { "(no readable elements)" })
             }
@@ -72,6 +76,11 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
             if (thought.isNotBlank()) AgentState.add("💭 $thought")
             if (act == "done") {
                 val r = a.optString("result", "完了しました")
+                val lesson = a.optString("lesson")
+                if (Prefs.learning && lesson.isNotBlank()) {
+                    Knowledge.learn(visited.lastOrNull { it != Safety.OWN && !it.contains("launcher") } ?: sc.pkg, lesson)
+                    AgentState.add("📘 学習: $lesson")
+                }
                 cur.think("完了", r)
                 delay(1500)
                 return r
@@ -148,6 +157,8 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
             "home" -> "ホームへ"
             "recents" -> "最近のアプリ"
             "notifications" -> "通知を開く"
+            "quick_settings" -> "クイック設定を開く"
+            "open_settings" -> "設定「${a.optString("page")}」を開く"
             "open_app" -> "「${a.optString("name")}」を起動"
             "wait" -> "待機 ${a.optDouble("sec", 2.0).toInt()}秒"
             else -> act
@@ -200,6 +211,8 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
         "recents" -> ok(s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS))
         "notifications" -> ok(s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS))
         "open_app" -> s.openApp(a.optString("name"))
+        "quick_settings" -> ok(s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS))
+        "open_settings" -> Knowledge.openSettings(s, a.optString("page"))
         "wait" -> { delay((a.optDouble("sec", 2.0).coerceIn(0.5, 15.0) * 1000).toLong()); "ok" }
         else -> "不明なアクション"
     }

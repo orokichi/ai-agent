@@ -32,7 +32,7 @@ object Safety {
         RegexOption.IGNORE_CASE
     )
     private val CARD = Regex("(?:\\d[ -]?){13,19}")
-    private val NAV = setOf("back", "home", "recents", "notifications", "wait", "scroll", "done")
+    private val NAV = setOf("back", "home", "recents", "notifications", "quick_settings", "open_settings", "wait", "scroll", "done")
 
     fun userBlocked(): Set<String> =
         Prefs.blockedPkgs.split(',', '\n', ' ').map { it.trim() }.filter { it.isNotEmpty() }.toSet()

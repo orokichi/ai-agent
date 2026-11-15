@@ -76,6 +76,15 @@ object Prefs {
         get() = sp.getBoolean("overlayStop", true)
         set(v) = sp.edit().putBoolean("overlayStop", v).apply()
 
+    fun raw(k: String) = s(k, "")
+    fun putRaw(k: String, v: String) = put(k, v)
+    var customKnowledge: String
+        get() = s("customKnowledge", "")
+        set(v) = put("customKnowledge", v)
+    var learning: Boolean
+        get() = sp.getBoolean("learning", true)
+        set(v) = sp.edit().putBoolean("learning", v).apply()
+
     var cursor: Boolean
         get() = sp.getBoolean("cursor", true)
         set(v) = sp.edit().putBoolean("cursor", v).apply()

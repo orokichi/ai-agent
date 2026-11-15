@@ -356,6 +356,9 @@ fun SettingsScreen() {
     var overlay by remember { mutableStateOf(Prefs.overlayStop) }
     var volume by remember { mutableStateOf(Prefs.volumeStop) }
     var cursorOn by remember { mutableStateOf(Prefs.cursor) }
+    var learnOn by remember { mutableStateOf(Prefs.learning) }
+    var custom by remember { mutableStateOf(Prefs.customKnowledge) }
+    var lessonCount by remember { mutableStateOf(Knowledge.count()) }
     var overlayPerm by remember { mutableStateOf(Settings.canDrawOverlays(ctx)) }
     val scope = rememberCoroutineScope()
 
@@ -419,6 +422,20 @@ fun SettingsScreen() {
         PermRow(Icons.Rounded.Layers, "他のアプリの上に重ねて表示", "仮想カーソルと思考バブルの表示に使います", overlayPerm) {
             ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")))
         }
+
+        Section("知識と学習")
+        Text(
+            "Android 17（Pixel）の基本操作（ナビゲーション、クイック設定、設定アプリの構成、バブル、主要アプリなど）を最初から知っています。",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        SwitchRow(Icons.Rounded.School, "実行から学習", "成功したタスクで覚えたコツをアプリごとに保存（学習済み: ${lessonCount}件）", learnOn) { learnOn = it; Prefs.learning = it }
+        OutlinedTextField(
+            value = custom, onValueChange = { custom = it; Prefs.customKnowledge = it },
+            label = { Text("AIに教えておくこと（任意）") },
+            placeholder = { Text("例: 3ボタンナビを使用 / LINEはホーム2ページ目") },
+            minLines = 2, modifier = Modifier.fillMaxWidth()
+        )
+        TextButton(onClick = { Knowledge.clear(); lessonCount = 0 }, enabled = lessonCount > 0) { Text("学習データを消去") }
 
         Section("安全装置")
         Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {
