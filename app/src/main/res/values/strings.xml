@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">AIエージェント</string>
+    <string name="a11y_desc">AIが画面を読み取り、あなたの指示や定期タスクに従ってタップ・入力・スクロールなどを行います。危険な操作は安全装置で停止し、通知・画面上の停止ボタン・音量キー同時押しでいつでも停止できます。</string>
+</resources>
