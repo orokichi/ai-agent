@@ -9,17 +9,35 @@ import java.io.IOException
 class Agent(private val s: AgentService) {
     companion object {
         val SYSTEM = """
-You operate an Android phone to reach the user's goal. Each turn you get the goal, recent actions and the current screen as numbered elements: [id] Class "label" flags @x,y (flags: c=clickable e=editable s=scrollable ✓/☐=checkbox p=password).
-Reply with ONE JSON object only:
-{"thought":"very short","action":"...", ...params, "risk":"low|high"}
-Actions: tap{id} | long_press{id} | type{id,text} | enter{id} | scroll{id?,dir:"up|down|left|right"} | swipe{x1,y1,x2,y2} | back | home | recents | notifications | open_app{name} | wait{sec} | done{result}
-Rules: one action per reply. Use open_app to launch apps. Never enter passwords, PINs or card numbers. Do not buy, pay, send money, delete data, post, send messages, call, or change security settings unless the goal explicitly asks. Set risk "high" for anything irreversible. If the goal is done, impossible, or unsafe, use done with a short result. Write thought and result in the user's language.
+You are an expert Android operator controlling a real phone to complete the user's goal.
+Each turn you receive: goal, current time, your plan and notes from earlier turns, recent actions with results, and the current screen as numbered elements:
+[id] Class "label" flags @x,y   (flags: c=clickable e=editable s=scrollable ✓/☐=checkbox p=password; @x,y = center in pixels)
+Reply with ONE JSON object only, no prose:
+{"thought":"what you see and why this action (1-2 short sentences)","plan":"remaining steps, short","note":"facts to remember (results found etc.) or empty","action":"...", ...params, "risk":"low|high"}
+Actions:
+ tap{id} | long_press{id} | type{id,text} (replaces the field's text) | enter{id} (submit/search key) | scroll{id?,dir:"up|down|left|right"} (down = see content below) | swipe{x1,y1,x2,y2} | back | home | recents | notifications | open_app{name} | wait{sec} | done{result}
+Strategy:
+- Read the whole screen first; pick the element whose label best matches. Prefer ids over swipe coordinates.
+- Launch apps with open_app (app name as shown on the home screen). Do not hunt for icons.
+- To search: tap/type into the search field, then enter or tap the search button.
+- If the target is not visible, scroll. If a popup/dialog blocks you, dismiss it (close/back) unless it is needed.
+- If the screen did not change after an action, do something different. Never repeat the same failing action 3 times.
+- When loading, use wait 2. When the goal is achieved, call done with the concrete result (e.g. the info found).
+Safety: never enter passwords, PINs or card numbers. Do not buy, pay, send money, delete, post, send messages, call or change security settings unless the goal explicitly asks. Set risk "high" for any irreversible action. If unsafe or impossible, done with the reason.
+Write thought, plan, note and result in the user's language (Japanese if the goal is Japanese).
 """.trimIndent()
     }
+
+    private val cur get() = s.cursor
 
     suspend fun run(goal: String, deadline: Long?): String {
         val max = Prefs.maxSteps
         val history = ArrayDeque<String>()
+        var plan = ""
+        var notes = ""
+        var prevScreen = ""
+        var lastKey = ""
+        var repeat = 0
         if (s.readScreen().pkg == Safety.OWN) {
             s.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
             delay(900)
@@ -28,40 +46,60 @@ Rules: one action per reply. Use open_app to launch apps. Never enter passwords,
             if (deadline != null && System.currentTimeMillis() > deadline) return "指定の時間帯を過ぎたため終了しました"
             waitUnlocked()
             val sc = s.readScreen()
+            if (step > 1 && sc.text == prevScreen && history.isNotEmpty()) {
+                history[history.lastIndex] = history.last() + " (screen unchanged!)"
+            }
+            prevScreen = sc.text
             AgentState.status.value = "考え中… ($step/$max)"
+            cur.think("考え中… $step/$max", plan.ifEmpty { goal })
             val user = buildString {
                 append("Goal: ").append(goal)
+                append("\nNow: ").append(java.text.SimpleDateFormat("yyyy-MM-dd(E) HH:mm", java.util.Locale.JAPAN).format(java.util.Date()))
                 append("\nStep ").append(step).append('/').append(max)
-                append("\nRecent: ").append(if (history.isEmpty()) "none" else history.joinToString(" | "))
+                if (plan.isNotEmpty()) append("\nYour plan: ").append(plan)
+                if (notes.isNotEmpty()) append("\nYour notes: ").append(notes)
+                append("\nRecent actions: ").append(if (history.isEmpty()) "none" else history.joinToString(" | "))
+                if (repeat >= 2) append("\nWARNING: you repeated the same action. Try a different approach.")
                 append("\nApp: ").append(sc.pkg.ifEmpty { "unknown" })
-                append("\nScreen:\n").append(sc.text.ifEmpty { "(no readable elements)" })
+                append("\nScreen ").append(s.screenSize()).append(":\n").append(sc.text.ifEmpty { "(no readable elements)" })
             }
-            val a: JSONObject = try {
-                Llm.parseJson(Llm.ask(SYSTEM, user))
-            } catch (e: IOException) {
-                if (e.message?.startsWith("AIの応答") == true) {
-                    history.addLast("invalid JSON reply"); trim(history); continue
-                }
-                throw e
-            }
+            val a = decide(user)
+            if (a == null) { history.addLast("invalid reply"); trim(history); continue }
             val act = a.optString("action")
-            a.optString("thought").takeIf { it.isNotBlank() }?.let { AgentState.add("💭 $it") }
-            if (act == "done") return a.optString("result", "完了しました")
+            val thought = a.optString("thought")
+            a.optString("plan").takeIf { it.isNotBlank() }?.let { plan = it.take(300) }
+            a.optString("note").takeIf { it.isNotBlank() }?.let { notes = (notes + " / " + it).takeLast(500).trimStart(' ', '/') }
+            if (thought.isNotBlank()) AgentState.add("💭 $thought")
+            if (act == "done") {
+                val r = a.optString("result", "完了しました")
+                cur.think("完了", r)
+                delay(1500)
+                return r
+            }
 
             val el = if (a.has("id")) sc.els.getOrNull(a.optInt("id", -1)) else null
+            val what = describe(act, a, el)
+            cur.think(what, thought)
+
             val v = Safety.check(a, el, sc)
             when (v.risk) {
                 Risk.BLOCK -> {
+                    cur.think("⛔ 安全装置が作動", v.reason)
                     AgentState.add("⛔ ブロック: ${v.reason}")
                     Notifs.alert(s, "安全装置が作動しました", v.reason)
+                    delay(1500)
                     return "安全装置により停止: ${v.reason}"
                 }
                 Risk.CONFIRM -> {
                     if (Prefs.safetyMode == "strict") {
+                        cur.think("⛔ 危険な操作のため停止", v.reason)
                         AgentState.add("⛔ 危険な操作のため停止: ${v.reason}")
                         Notifs.alert(s, "安全装置が作動しました", v.reason)
+                        delay(1500)
                         return "危険な操作のため停止: ${v.reason}"
                     }
+                    el?.let { cur.moveTo(it.rect.exactCenterX(), it.rect.exactCenterY(), "⚠ " + what) }
+                    cur.think("⚠ 確認待ち（通知から許可）", v.reason)
                     AgentState.add("⚠ 確認待ち: ${v.reason}")
                     if (!askUser(v.reason)) return "許可されなかったため停止: ${v.reason}"
                     AgentState.add("✓ 許可されました")
@@ -69,23 +107,54 @@ Rules: one action per reply. Use open_app to launch apps. Never enter passwords,
                 Risk.OK -> {}
             }
 
+            // 仮想カーソルを操作点へ
+            when {
+                el != null -> cur.moveTo(el.rect.exactCenterX(), el.rect.exactCenterY(), what)
+                act == "swipe" -> cur.moveTo(a.optDouble("x1", 0.0).toFloat(), a.optDouble("y1", 0.0).toFloat(), what)
+            }
+            if (act in setOf("tap", "long_press", "enter")) cur.pulse()
+
             AgentState.status.value = "実行中… ($step/$max)"
             val res = exec(act, a, el)
-            val what = buildString {
-                append(act)
-                el?.label?.takeIf { it.isNotEmpty() }?.let { append(" \"").append(it.take(25)).append('"') }
-                if (act == "type") append(" '").append(a.optString("text").take(25)).append('\'')
-                if (act == "open_app") append(' ').append(a.optString("name"))
-                if (act == "scroll") append(' ').append(a.optString("dir", "down"))
-            }
             AgentState.add("→ $what : $res")
+            val key = act + a.optInt("id", -1) + a.optString("text")
+            repeat = if (key == lastKey) repeat + 1 else 0
+            lastKey = key
             history.addLast("$what=$res"); trim(history)
-            if (act != "wait") delay(1300)
+            if (act != "wait") delay(1200)
         }
         return "最大ステップ数（$max）に達したため停止しました"
     }
 
-    private fun trim(h: ArrayDeque<String>) { while (h.size > 6) h.removeFirst() }
+    /** 応答をJSONとして解析。失敗したら1回だけ言い直させる */
+    private suspend fun decide(user: String): JSONObject? {
+        val first = Llm.ask(SYSTEM, user)
+        return try { Llm.parseJson(first) } catch (_: Exception) {
+            try { Llm.parseJson(Llm.ask(SYSTEM, user + "\n\nYour previous reply was not valid JSON. Reply with ONE JSON object only.")) }
+            catch (_: Exception) { null }
+        }
+    }
+
+    private fun describe(act: String, a: JSONObject, el: El?): String {
+        val l = el?.label?.take(18)?.let { "「$it」" } ?: ""
+        return when (act) {
+            "tap" -> "${l}をタップ"
+            "long_press" -> "${l}を長押し"
+            "type" -> "${l}に入力: ${a.optString("text").take(24)}"
+            "enter" -> "${l}で確定"
+            "scroll" -> "スクロール ${when (a.optString("dir", "down")) { "up" -> "↑"; "left" -> "←"; "right" -> "→"; else -> "↓" }}"
+            "swipe" -> "スワイプ"
+            "back" -> "戻る"
+            "home" -> "ホームへ"
+            "recents" -> "最近のアプリ"
+            "notifications" -> "通知を開く"
+            "open_app" -> "「${a.optString("name")}」を起動"
+            "wait" -> "待機 ${a.optDouble("sec", 2.0).toInt()}秒"
+            else -> act
+        }
+    }
+
+    private fun trim(h: ArrayDeque<String>) { while (h.size > 8) h.removeFirst() }
 
     private suspend fun waitUnlocked() {
         if (!s.isLocked()) return

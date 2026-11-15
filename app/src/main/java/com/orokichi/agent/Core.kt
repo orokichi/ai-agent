@@ -76,6 +76,10 @@ object Prefs {
         get() = sp.getBoolean("overlayStop", true)
         set(v) = sp.edit().putBoolean("overlayStop", v).apply()
 
+    var cursor: Boolean
+        get() = sp.getBoolean("cursor", true)
+        set(v) = sp.edit().putBoolean("cursor", v).apply()
+
     var volumeStop: Boolean
         get() = sp.getBoolean("volumeStop", true)
         set(v) = sp.edit().putBoolean("volumeStop", v).apply()

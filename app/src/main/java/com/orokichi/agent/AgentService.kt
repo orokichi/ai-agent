@@ -43,6 +43,7 @@ class AgentService : AccessibilityService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var overlay: View? = null
+    val cursor by lazy { CursorOverlay(this) }
     private var volUp = false
     private var volDown = false
 
@@ -64,6 +65,7 @@ class AgentService : AccessibilityService() {
         AgentState.stop("サービス終了")
         instance = null
         hideOverlay()
+        cursor.hide()
         scope.cancel()
         super.onDestroy()
     }
@@ -86,6 +88,7 @@ class AgentService : AccessibilityService() {
         if (AgentState.running.value) return false
         AgentState.running.value = true
         AgentState.job = scope.launch {
+            cursor.show()
             showOverlay()
             Notifs.ongoing(this@AgentService, goal)
             val wl = wake()
@@ -105,6 +108,7 @@ class AgentService : AccessibilityService() {
                 AgentState.pending.value = null
                 AgentState.status.value = "待機中"
                 hideOverlay()
+                cursor.hide()
                 Notifs.cancel(this@AgentService, Notifs.ID_RUN)
                 if (wl.isHeld) wl.release()
             }
@@ -118,6 +122,11 @@ class AgentService : AccessibilityService() {
         val wl = pm.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "agent:run")
         wl.acquire(30 * 60 * 1000L)
         return wl
+    }
+
+    fun screenSize(): String {
+        val m = resources.displayMetrics
+        return "${m.widthPixels}x${m.heightPixels}"
     }
 
     fun isLocked(): Boolean = getSystemService(KeyguardManager::class.java).isKeyguardLocked

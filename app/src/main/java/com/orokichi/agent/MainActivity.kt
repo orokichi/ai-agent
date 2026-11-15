@@ -355,6 +355,8 @@ fun SettingsScreen() {
     var blocked by remember { mutableStateOf(Prefs.blockedPkgs) }
     var overlay by remember { mutableStateOf(Prefs.overlayStop) }
     var volume by remember { mutableStateOf(Prefs.volumeStop) }
+    var cursorOn by remember { mutableStateOf(Prefs.cursor) }
+    var overlayPerm by remember { mutableStateOf(Settings.canDrawOverlays(ctx)) }
     val scope = rememberCoroutineScope()
 
     var a11y by remember { mutableStateOf(AgentService.isEnabled(ctx)) }
@@ -366,6 +368,7 @@ fun SettingsScreen() {
         a11y = AgentService.isEnabled(ctx)
         notif = ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         exact = Scheduler.canExact(ctx)
+        overlayPerm = Settings.canDrawOverlays(ctx)
         battery = ctx.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(ctx.packageName)
     }
 
@@ -410,6 +413,12 @@ fun SettingsScreen() {
                 }
             }
         }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.NetworkCheck, null); Spacer(Modifier.width(8.dp)); Text("すべて接続テスト") }
+
+        Section("表示")
+        SwitchRow(Icons.Rounded.Mouse, "仮想カーソルと思考表示", "操作する場所・入力内容・AIの考えを画面に重ねて表示", cursorOn) { cursorOn = it; Prefs.cursor = it }
+        PermRow(Icons.Rounded.Layers, "他のアプリの上に重ねて表示", "仮想カーソルと思考バブルの表示に使います", overlayPerm) {
+            ctx.startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${ctx.packageName}")))
+        }
 
         Section("安全装置")
         Row(horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)) {

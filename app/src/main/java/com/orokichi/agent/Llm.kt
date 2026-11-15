@@ -57,8 +57,8 @@ object Llm {
         else "https://api.groq.com/openai/v1/chat/completions"
         val body = JSONObject()
             .put("model", c.model)
-            .put("temperature", 0.2)
-            .put("max_tokens", 600)
+            .put("temperature", 0.1)
+            .put("max_tokens", 900)
             .put(
                 "messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content", sys))
@@ -83,7 +83,7 @@ object Llm {
                     JSONObject().put("role", "user").put("parts", JSONArray().put(JSONObject().put("text", user)))
                 )
             )
-            .put("generationConfig", JSONObject().put("temperature", 0.2).put("responseMimeType", "application/json"))
+            .put("generationConfig", JSONObject().put("temperature", 0.1).put("responseMimeType", "application/json"))
         val r = JSONObject(post(url, mapOf("x-goog-api-key" to c.key), body.toString()))
         val parts = r.getJSONArray("candidates").getJSONObject(0).getJSONObject("content").getJSONArray("parts")
         return buildString { for (i in 0 until parts.length()) append(parts.getJSONObject(i).optString("text")) }
