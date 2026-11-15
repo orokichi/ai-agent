@@ -18,12 +18,12 @@ object Llm {
     private fun id(c: LlmCfg) = c.provider + ":" + c.key.takeLast(6)
 
     /** 登録済みの全キーを順に試す。制限(429)なら次へ、全部制限中なら60秒待って再試行。 */
-    suspend fun ask(sys: String, user: String): String {
+    suspend fun ask(sys: String, user: String, localSys: String? = null): String {
         val lm = Prefs.localMode
         if (lm != "off") {
             val ready = LocalLlm.readyModel(App.ctx)
             if (ready != null) {
-                try { return LocalLlm.ask(App.ctx, sys, user) }
+                try { return LocalLlm.ask(App.ctx, localSys ?: sys, user, if (localSys != null) Agent.SCHEMA else null) }
                 catch (e: Throwable) {
                     if (lm == "only" || e is kotlinx.coroutines.CancellationException) throw if (e is IOException || e is kotlinx.coroutines.CancellationException) e else IOException("端末内AIエラー: ${e.message}")
                     AgentState.add("⚠ 端末内AIエラー → クラウドAPIへ: ${e.message?.take(60)}")
@@ -127,10 +127,23 @@ object Llm {
         }
     }
 
-    fun parseJson(s: String): JSONObject {
+    fun parseJson(raw: String): JSONObject {
+        val s = raw.replace(Regex("(?s)<think>.*?</think>"), "").replace("```json", "").replace("```", "")
         val a = s.indexOf('{')
+        if (a < 0) throw IOException("AIの応答を解析できません: ${s.take(80)}")
+        // 最初の完全なJSONオブジェクトを括弧の対応で切り出す（後ろに余計な文があっても可）
+        var depth = 0; var inStr = false; var esc = false
+        for (i in a until s.length) {
+            val ch = s[i]
+            if (inStr) { if (esc) esc = false else if (ch == '\\') esc = true else if (ch == '"') inStr = false; continue }
+            when (ch) {
+                '"' -> inStr = true
+                '{' -> depth++
+                '}' -> { depth--; if (depth == 0) return JSONObject(s.substring(a, i + 1)) }
+            }
+        }
         val b = s.lastIndexOf('}')
-        if (a < 0 || b <= a) throw IOException("AIの応答を解析できません: ${s.take(80)}")
-        return JSONObject(s.substring(a, b + 1))
+        if (b > a) return JSONObject(s.substring(a, b + 1))
+        throw IOException("AIの応答を解析できません: ${s.take(80)}")
     }
 }

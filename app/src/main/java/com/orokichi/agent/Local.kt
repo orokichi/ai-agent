@@ -15,6 +15,7 @@ import com.google.ai.edge.litertlm.ConversationConfig
 import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.LogSeverity
+import com.google.ai.edge.litertlm.ResponseFormat
 import com.google.ai.edge.litertlm.SamplerConfig
 import com.google.ai.edge.litertlm.ThinkingConfig
 import kotlinx.coroutines.CoroutineScope
@@ -131,23 +132,37 @@ object LocalLlm {
         engine = null; engPath = null
     }
 
-    suspend fun ask(c: Context, sys: String, user: String): String = withContext(Dispatchers.Default) {
+    @Volatile private var schemaOk = true
+
+    suspend fun ask(c: Context, sys: String, user: String, schema: String? = null): String = withContext(Dispatchers.Default) {
         mutex.withLock {
             val m = readyModel(c) ?: throw IOException("端末内モデルがダウンロードされていません（設定タブ）")
             // 文脈長に合わせて入力を短くする
             val small = m.ctx <= 4096
             val s = if (small) sys.substringBefore("## Android 17").trim() else sys
-            val u = if (user.length > (if (small) 3500 else 7000)) user.take(if (small) 3500 else 7000) + "\n…(truncated)" else user
+            val cap = if (small) 4500 else 9000
+            // 上限を超える場合は中央（古い履歴や画面の末尾側）ではなく先頭側を残し、末尾の指示は必ず残す
+            val u = if (user.length > cap) user.take(cap - 300) + "\n…\n" + user.takeLast(280) else user
             val e = engineFor(c, m)
-            val cfg = ConversationConfig(
+            val useSchema = schema != null && schemaOk
+            fun cfg(rf: Boolean) = ConversationConfig(
                 systemInstruction = Contents.of(s),
-                samplerConfig = SamplerConfig(topK = 40, topP = 0.95, temperature = 0.2),
-                maxOutputToken = 600
+                samplerConfig = SamplerConfig(topK = 20, topP = 0.9, temperature = 0.1),
+                maxOutputToken = 400,
+                enableResponseFormat = rf
             )
-            val out = e.createConversation(cfg).use { conv ->
-                try { conv.sendMessage(u, thinkingConfig = ThinkingConfig(enableThinking = false)).toString() }
-                catch (_: IllegalArgumentException) { conv.sendMessage(u).toString() }
+            fun gen(rf: Boolean): String = e.createConversation(cfg(rf)).use { conv ->
+                val fmt = if (rf) ResponseFormat.json(schema!!) else null
+                try { conv.sendMessage(u, thinkingConfig = ThinkingConfig(enableThinking = false), responseFormat = fmt).toString() }
+                catch (ex: IllegalArgumentException) { if (rf) throw ex; conv.sendMessage(u).toString() }
             }
+            val out = if (useSchema) {
+                try { gen(true) } catch (t: Throwable) {
+                    schemaOk = false
+                    AgentState.add("ℹ 制約付き生成が使えないため通常生成に切り替え: ${t.message?.take(60)}")
+                    gen(false)
+                }
+            } else gen(false)
             out.replace(Regex("(?s)<think>.*?</think>"), "").trim()
         }
     }

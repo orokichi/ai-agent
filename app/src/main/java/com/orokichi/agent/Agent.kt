@@ -27,6 +27,119 @@ Strategy:
 Safety: never enter passwords, PINs or card numbers. Do not buy, pay, send money, delete, post, send messages, call or change security settings unless the goal explicitly asks. Set risk "high" for any irreversible action. If unsafe or impossible, done with the reason.
 Write thought, plan, note and result in the user's language (Japanese if the goal is Japanese).
 """.trimIndent() + "\n\n" + Knowledge.ANDROID17
+
+        /** 端末内の小型モデル向け：短く、例つき、フラットなJSON */
+        val SYSTEM_LOCAL = """
+You control an Android phone (Japanese UI) step by step to reach the user's goal.
+You get the goal, recent actions and the current screen as lines: [id] Class "label" flags @x,y (c=clickable e=editable s=scrollable).
+Reply with exactly ONE flat JSON object and nothing else. Keys: thought, action, plus the parameters of that action at the top level.
+Actions and parameters:
+- open_app: name   (launch an app by its name, e.g. "設定", "Chrome", "時計")
+- tap: id          (id = number in [ ] on the screen)
+- long_press: id
+- type: id, text   (write text into an editable field)
+- enter: id        (press search/enter on a field)
+- scroll: dir      ("down" shows more below, or "up")
+- back | home | notifications | quick_settings
+- open_settings: page (wifi bluetooth display sound battery apps notifications location storage)
+- wait: sec
+- done: result     (when the goal is reached or impossible; result = answer in Japanese)
+Examples:
+{"thought":"設定アプリを開く","action":"open_app","name":"設定"}
+{"thought":"「ネットワークとインターネット」を押す","action":"tap","id":7}
+{"thought":"検索欄に入力する","action":"type","id":3,"text":"岡山 天気"}
+{"thought":"下に続きがある","action":"scroll","dir":"down"}
+{"thought":"目的を達成した","action":"done","result":"Wi-Fiをオンにしました"}
+Rules: one action per reply. Use only ids that exist on the current screen. If the screen did not change, try something else. Never enter passwords or pay. Write thought and result in Japanese.
+""".trimIndent()
+
+        val ACTIONS = setOf(
+            "tap", "long_press", "type", "enter", "scroll", "swipe", "back", "home", "recents",
+            "notifications", "quick_settings", "open_app", "open_settings", "wait", "done"
+        )
+        private val ALIAS = mapOf(
+            "click" to "tap", "press" to "tap", "touch" to "tap", "select" to "tap", "tap_element" to "tap", "click_element" to "tap",
+            "longpress" to "long_press", "long_click" to "long_press", "long_tap" to "long_press", "hold" to "long_press",
+            "input" to "type", "type_text" to "type", "input_text" to "type", "set_text" to "type", "write" to "type", "fill" to "type",
+            "submit" to "enter", "search" to "enter", "press_enter" to "enter",
+            "scroll_down" to "scroll", "scroll_up" to "scroll", "swipe_up" to "scroll", "swipe_down" to "scroll",
+            "go_back" to "back", "press_back" to "back", "navigate_back" to "back",
+            "go_home" to "home", "press_home" to "home",
+            "launch" to "open_app", "launch_app" to "open_app", "open" to "open_app", "start_app" to "open_app", "openapp" to "open_app",
+            "settings" to "open_settings", "open_setting" to "open_settings",
+            "open_notifications" to "notifications", "open_quick_settings" to "quick_settings",
+            "sleep" to "wait", "pause" to "wait",
+            "finish" to "done", "complete" to "done", "finished" to "done", "stop" to "done", "answer" to "done", "end" to "done"
+        )
+
+        /** JSON Schema（端末内モデルの制約付き生成用） */
+        val SCHEMA = """
+{"type":"object","properties":{
+ "thought":{"type":"string"},
+ "action":{"type":"string","enum":["tap","long_press","type","enter","scroll","back","home","notifications","quick_settings","open_app","open_settings","wait","done"]},
+ "id":{"type":"integer"},"text":{"type":"string"},"name":{"type":"string"},"page":{"type":"string"},
+ "dir":{"type":"string","enum":["up","down","left","right"]},"sec":{"type":"number"},"result":{"type":"string"}
+},"required":["thought","action"]}
+""".trimIndent()
+
+        private fun idOf(v: Any?): Int? = when (v) {
+            is Number -> v.toInt()
+            is String -> Regex("\\d+").find(v)?.value?.toIntOrNull()
+            else -> null
+        }
+
+        /** モデルごとの書き方の揺れを吸収して、実行できる形にそろえる */
+        fun normalize(src: JSONObject): JSONObject {
+            val a = JSONObject(src.toString())
+            // パラメータが入れ子の場合は展開
+            for (k in listOf("params", "parameters", "args", "arguments", "input")) {
+                val o = a.optJSONObject(k) ?: continue
+                o.keys().forEach { if (!a.has(it) || it == "id") a.put(it, o.get(it)) }
+            }
+            var act: Any? = a.opt("action") ?: a.opt("type").takeIf { !a.has("text") || a.opt("type") !is String }
+            if (act == null) for (k in listOf("action_type", "command", "cmd", "tool", "function")) if (a.has(k)) { act = a.opt(k); break }
+            // {"action":{"tap":{"id":3}}} / {"action":{"name":"tap","id":3}}
+            if (act is JSONObject) {
+                val o = act
+                val n = o.optString("name").ifEmpty { o.optString("type").ifEmpty { o.optString("action") } }
+                if (n.isNotEmpty()) { o.keys().forEach { if (it !in setOf("name", "type", "action")) a.put(it, o.get(it)) }; act = n }
+                else o.keys().asSequence().firstOrNull()?.let { k -> o.optJSONObject(k)?.let { p -> p.keys().forEach { a.put(it, p.get(it)) } }; act = k }
+            }
+            var name = (act as? String ?: "").trim()
+            // "tap{id:5}" / "tap(5)" / "tap 5"
+            Regex("^([A-Za-z_]+)\\s*[({\\[ ]\\s*(.*?)[)}\\]]?$").find(name)?.let { m ->
+                name = m.groupValues[1]
+                val inner = m.groupValues[2]
+                Regex("([A-Za-z_]+)\\s*[:=]\\s*\"?([^,\"}]+)\"?").findAll(inner).forEach { kv -> if (!a.has(kv.groupValues[1]) || kv.groupValues[1] == "id") a.put(kv.groupValues[1], kv.groupValues[2].trim()) }
+                if (!a.has("id")) idOf(inner)?.let { a.put("id", it) }
+            }
+            name = name.lowercase().replace('-', '_').replace(' ', '_')
+            when (name) {
+                "scroll_down", "swipe_up" -> if (!a.has("dir")) a.put("dir", "down")
+                "scroll_up", "swipe_down" -> if (!a.has("dir")) a.put("dir", "up")
+            }
+            name = ALIAS[name] ?: name
+            a.put("action", name)
+            // id のゆれ
+            for (k in listOf("id", "element", "element_id", "elementId", "index", "target", "node")) {
+                if (a.has(k)) { idOf(a.opt(k))?.let { a.put("id", it) }; if (a.has("id") && a.opt("id") is Int) break }
+            }
+            if (a.has("id") && a.opt("id") !is Int) idOf(a.opt("id"))?.let { a.put("id", it) } ?: a.remove("id")
+            // 文字列パラメータのゆれ
+            if (name == "open_app" && a.optString("name").isEmpty())
+                listOf("app", "app_name", "appName", "package", "target", "text").firstNotNullOfOrNull { a.optString(it).takeIf { v -> v.isNotBlank() } }?.let { a.put("name", it) }
+            if (name == "type" && a.optString("text").isEmpty())
+                listOf("value", "content", "input_text", "string").firstNotNullOfOrNull { a.optString(it).takeIf { v -> v.isNotBlank() } }?.let { a.put("text", it) }
+            if (name == "scroll") {
+                val d = a.optString("dir").ifEmpty { a.optString("direction") }.lowercase()
+                a.put("dir", if (d in setOf("up", "down", "left", "right")) d else "down")
+            }
+            if (name == "open_settings" && a.optString("page").isEmpty()) a.put("page", a.optString("name").ifEmpty { "settings" })
+            if (name == "done" && a.optString("result").isEmpty())
+                listOf("answer", "message", "text", "thought").firstNotNullOfOrNull { a.optString(it).takeIf { v -> v.isNotBlank() } }?.let { a.put("result", it) }
+            if (a.optString("thought").isEmpty()) listOf("reason", "reasoning", "thinking", "explanation").firstNotNullOfOrNull { a.optString(it).takeIf { v -> v.isNotBlank() } }?.let { a.put("thought", it) }
+            return a
+        }
     }
 
     private val cur get() = s.cursor
@@ -65,11 +178,22 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
                 if (repeat >= 2) append("\nWARNING: you repeated the same action. Try a different approach.")
                 append(Knowledge.forPrompt(sc.pkg, visited))
                 append("\nApp: ").append(sc.pkg.ifEmpty { "unknown" })
-                append("\nScreen ").append(s.screenSize()).append(":\n").append(sc.text.ifEmpty { "(no readable elements)" })
+                append("\nScreen ").append(s.screenSize()).append(":\n").append(screenFor(sc.text))
+                append("\n\nGoal (again): ").append(goal).append("\nReply with ONE JSON object for the next action.")
             }
             val a = decide(user)
-            if (a == null) { history.addLast("invalid reply"); trim(history); continue }
+            if (a == null) { history.addLast("invalid reply (reply with ONE JSON object)"); trim(history); continue }
             val act = a.optString("action")
+            if (act !in ACTIONS) {
+                AgentState.add("⚠ 不明なアクション「$act」")
+                history.addLast("unknown action \"$act\" (use one of: ${ACTIONS.joinToString(" ")})"); trim(history)
+                continue
+            }
+            if (act in setOf("tap", "long_press") && (!a.has("id") || sc.els.getOrNull(a.optInt("id", -1)) == null)) {
+                AgentState.add("⚠ 存在しないid: ${a.opt("id")}")
+                history.addLast("$act failed: id ${a.opt("id")} does not exist on this screen, choose an id from the list"); trim(history)
+                continue
+            }
             val thought = a.optString("thought")
             a.optString("plan").takeIf { it.isNotBlank() }?.let { plan = it.take(300) }
             a.optString("note").takeIf { it.isNotBlank() }?.let { notes = (notes + " / " + it).takeLast(500).trimStart(' ', '/') }
@@ -137,11 +261,27 @@ Write thought, plan, note and result in the user's language (Japanese if the goa
 
     /** 応答をJSONとして解析。失敗したら1回だけ言い直させる */
     private suspend fun decide(user: String): JSONObject? {
-        val first = Llm.ask(SYSTEM, user)
-        return try { Llm.parseJson(first) } catch (_: Exception) {
-            try { Llm.parseJson(Llm.ask(SYSTEM, user + "\n\nYour previous reply was not valid JSON. Reply with ONE JSON object only.")) }
-            catch (_: Exception) { null }
+        val first = Llm.ask(SYSTEM, user, SYSTEM_LOCAL)
+        return try { normalize(Llm.parseJson(first)) } catch (_: Exception) {
+            AgentState.add("🧾 解析できない応答: ${first.take(120).replace('\n', ' ')}")
+            val again = Llm.ask(SYSTEM, user + "\n\nYour previous reply was not valid JSON. Reply with ONE JSON object only, like {\"thought\":\"...\",\"action\":\"tap\",\"id\":3}", SYSTEM_LOCAL)
+            try { normalize(Llm.parseJson(again)) }
+            catch (_: Exception) { AgentState.add("🧾 解析できない応答: ${again.take(120).replace('\n', ' ')}"); null }
         }
+    }
+
+    /** 端末内モデルは文脈が短いので、画面情報を要素単位で切り詰める（ゴールが切れないように） */
+    private fun screenFor(text: String): String {
+        if (text.isEmpty()) return "(no readable elements)"
+        val m = if (Prefs.localMode != "off") LocalLlm.readyModel(s) else null
+        val limit = when { m == null -> Int.MAX_VALUE; m.ctx <= 4096 -> 2500; else -> 5500 }
+        if (text.length <= limit) return text
+        val out = StringBuilder()
+        for (line in text.lineSequence()) {
+            if (out.length + line.length + 1 > limit) { out.append("…(more elements: scroll to see)\n"); break }
+            out.append(line).append('\n')
+        }
+        return out.toString()
     }
 
     private fun describe(act: String, a: JSONObject, el: El?): String {
